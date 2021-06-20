@@ -18,25 +18,56 @@ THIS SOFTWARE.
 // in Apps Script V8, can't use const as this needs to be hoisted, so use var
 var RandomThings = (() => {
 
-  const DATE_36_DIGITS = 8;
+  // use the standard random generator
   const rand = Math.random;
 
-  // make a whitelist
-  const chars = Array.from({ length: 256 - 32 }).map((_, i) => String.fromCharCode(i + 33))
+  // make a whitelist for character sets - just skip all control chars though
+  const chars = Array.from({ length: 256 - 31 }).map((_, i) => String.fromCharCode(i + 32))
   const accents = chars.filter(j => j.match(/[?-??-??-?]/))
 
   const whitelist = {
-    numbers: chars.filter(j => j.match(/[0-9]/)),
     lower: chars.filter(j => j.match(/[a-z]/)),
     upper: chars.filter(j => j.match(/[A-Z]/)),
+    numbers: chars.filter(j => j.match(/[0-9]/)),
     accents,
-    specials: chars.slice(0, 127 - 33).filter(j => j.match(/\W/))
+    space: chars.filter(j => j.match(/\s/)),
+    specials: chars.slice(0, 127 - 32).filter(j => j.match(/\W/))
   }
+
+  // make a character set from a given selection
+  const getCharSet = (charTypes) => {
+    // don't bother if its the default
+    if (!charTypes) return defSet
+
+    // special set needed
+    if (typeof charTypes !== 'object') throw new Error('chartypes must be an object like {upper: true, custom: regex}')
+    return Object.keys(charTypes)
+      .reduce((p, c) => {
+
+        if (c === 'custom') {
+          return p.concat(chars.filter(j => j.match(charTypes[c])))
+        }
+        // only a truthy will include
+        if (!charTypes[c]) return p;
+
+        if (whitelist[c]) {
+          return p.concat(whitelist[c])
+        } else {
+          throw new Error('unknown option' + c)
+        }
+      }, [])
+      // remove dups
+      .filter((f, i, a) => a.indexOf(f) === i)
+  }
+
   // default character set
+  const defSet = getCharSet({
+    lower: true,
+    upper: true,
+    numbers: true,
+  })
 
-  const minSet = whitelist.numbers.concat(whitelist.lower)
-  const defSet = minSet.concat(whitelist.upper)
-
+  // make a sha1 digest
   const digest = (...args) => {
     // conver args to an array and digest them
     const t = args.map(d => {
@@ -46,15 +77,10 @@ var RandomThings = (() => {
     return Utilities.base64EncodeWebSafe(s)
 
   };
-  const getCharSet = (charTypes) => {
-    if (!charTypes) return defSet
-    if (typeof charTypes !== 'object') throw new Error('chartypes must be an object like {upper: false, custom: regex}')
-    return Object.keys(charTypes)
-      .reduce((p, c) => p.concat(c === 'custom' ? chars.filter(j => j.match(charTypes[c])) : charTypes[c] ? whitelist[c] : []), minSet)
-      .filter((f,i,a)=>a.indexOf(f)===i)
-  }
 
-  const char = (charSet = defSet) => charSet[between(0, charSet.length - 1)]
+  // get a random array member
+  const member = (arr) => arr[between(0, arr.length - 1)]
+  const char = (charSet = defSet) => member(charSet)
 
 
   /**
@@ -65,22 +91,32 @@ var RandomThings = (() => {
    * @param {object} [options.charTypes] to filter the types (upper,accents, specials)  
    * @return {string} a unique string
    **/
-  const unique = (options) => makeId(options)
+  const makeUnique = (options) => makeId(options)
 
+  /**
+   * get chars from set using current time
+   */
+  const timeStampChars = ({ charSet = defSet, timeStamp } = {}) => (timeStamp || new Date().getTime()).toString().split('').map(f => charSet[parseInt(f, 10) % charSet.length]).join('')
 
-  const makeId = ({ length = 32, charTypes } = {}) =>
-    (
-      arbitrary({ length: length - DATE_36_DIGITS, charTypes }) + new Date().getTime().toString(36)
+  /**
+   * make an id featuring the current time built in
+   */
+  const makeId = ({ length = 32, charTypes } = {}) => {
+    const tc = timeStampChars({ charSet: getCharSet(charTypes) })
+    return (
+      make({ length: length - tc.length, charTypes }) + tc
     ).slice(0, length);
+  }
 
 
   /**
-   * get an arbitrary alpha string
-   * @param {number} length of the string to generate
-   * @return {string} an alpha string
+   * get a random string
    **/
-  const arbitrary = ({ length, charTypes }) => {
+  const make = ({ length = 32, charTypes = null, unique = false } = {}) => {
+    if (unique) return makeUnique({length, charTypes})
+    // don't need special unique treatment
     const cset = getCharSet(charTypes)
+   
     return length > 0 ? Array.from({ length }).map(j => char(cset)).join("") : "";
   }
 
@@ -101,7 +137,7 @@ var RandomThings = (() => {
    * @param {number} [options.length=5] number of digits
    * @return {number} a number with digits
    */
-  const digits = ({ length = 5 }) =>
+  const digits = ({ length = 5} ={}) =>
     length > 0
       ? between(Math.pow(10, length - 1), Math.pow(10, length) - 1)
       : null;
@@ -128,7 +164,7 @@ var RandomThings = (() => {
 
     num = num / 10.0 + 0.5; // Translate to 0 -> 1
     // recurse if we're out of range
-    if (num > 1 || num < 0) num = skewedDistribution(min, max, skew); // resample between 0 and 1 if out of range
+    if (num > 1 || num < 0) num = randomSkewed(min, max, skew); // resample between 0 and 1 if out of range
     num = Math.pow(num, skew); // Skew
     num *= max - min; // Stretch to fill range
     num += min; // offset to min
@@ -169,7 +205,7 @@ var RandomThings = (() => {
     };
   }
 
-  const scale = ({ min = 0, max = 1, values = [] }) => {
+  const scale = ({ min = 0, max = 1, values = [] } = {}) => {
     const mn = Math.min(...values)
     const mx = Math.max(...values)
     const range = mx - mn
@@ -202,18 +238,20 @@ var RandomThings = (() => {
   }
 
   const string = {
-    unique,
-    arbitrary,
-    digest,
-    makeId,
-    char
+    make,
+    digest
   }
 
   const number = {
     digits,
     between
   }
-  const closures = {
+
+  const selection = {
+    member
+  }
+
+  const closure = {
     scale
   }
 
@@ -221,7 +259,8 @@ var RandomThings = (() => {
     number,
     string,
     distributions,
-    closures
+    closure,
+    selection
   };
 })();
 
